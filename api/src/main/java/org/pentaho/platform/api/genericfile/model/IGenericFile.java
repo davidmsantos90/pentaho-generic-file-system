@@ -109,6 +109,11 @@ public interface IGenericFile extends IProviderable {
 
   /**
    * Gets the original location of the generic file before it was deleted.
+   * <p>
+   * Each `IGenericFile` in the list corresponds to a folder in the path hierarchy
+   * from the root to the original parent folder of the deleted file.
+   * <p>
+   * Note: Some folders in the original location may not exist anymore.
    */
   List<IGenericFile> getOriginalLocation();
 

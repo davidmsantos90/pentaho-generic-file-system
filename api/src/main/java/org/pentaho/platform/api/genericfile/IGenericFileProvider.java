@@ -188,7 +188,7 @@ public interface IGenericFileProvider<T extends IGenericFile> {
   IGenericFile getFile( @NonNull GenericFilePath path ) throws OperationFailedException;
 
   /**
-   * Gets a list of deleted files.
+   * Gets a list of deleted files which are still available in the trash folder.
    *
    * @return The list of deleted files.
    * @throws AccessControlException   If the current user cannot perform this operation.

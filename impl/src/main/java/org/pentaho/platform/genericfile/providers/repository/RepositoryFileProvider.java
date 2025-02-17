@@ -13,6 +13,7 @@
 
 package org.pentaho.platform.genericfile.providers.repository;
 
+import com.cronutils.utils.VisibleForTesting;
 import edu.umd.cs.findbugs.annotations.NonNull;
 import edu.umd.cs.findbugs.annotations.Nullable;
 import org.pentaho.platform.api.genericfile.GenericFilePath;
@@ -73,7 +74,7 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
     }
   }
 
-  public static final String TYPE = "pur";
+  public static final String TYPE = "repository";
 
   @NonNull
   private final IUnifiedRepository unifiedRepository;
@@ -218,8 +219,7 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
     }
 
     // The parent path of base path.
-    GenericFilePath parentPath = basePath.getParent();
-    String parentPathString = parentPath != null ? parentPath.toString() : null;
+    String parentPathString = getParentPath( basePath );
 
     return convertFromNativeFileTreeDto( nativeTree, parentPathString );
   }
@@ -261,8 +261,7 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
     }
 
     // The parent path of path.
-    GenericFilePath parentPath = path.getParent();
-    String parentPathString = parentPath != null ? parentPath.toString() : null;
+    String parentPathString = getParentPath( path );
 
     return convertFromNativeFile( repositoryFile, parentPathString );
   }
@@ -343,12 +342,13 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
     repositoryObject.setModifiedDate( getModifiedDateFromNativeFileDto( nativeFile ) );
     repositoryObject.setObjectId( nativeFile.getId() );
     repositoryObject.setDescription( nativeFile.getDescription() );
+    repositoryObject.setOwner( getOwnerFromNativeFileDto( nativeFile ) );
 
     return repositoryObject;
   }
 
   @Nullable
-  private Date getDate( String date ) {
+  private Date parseDate( String date ) {
     try {
       if ( !StringUtil.isEmpty( date ) ) {
         return repositoryWsDateAdapter.unmarshal( date );
@@ -362,18 +362,33 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
 
   @Nullable
   private Date getModifiedDateFromNativeFileDto( @NonNull RepositoryFileDto nativeFile ) {
-    Date lastModified = getDate( nativeFile.getLastModifiedDate() );
+    Date lastModified = parseDate( nativeFile.getLastModifiedDate() );
     if ( lastModified != null ) {
       return lastModified;
     }
 
-    return getDate( nativeFile.getCreatedDate() );
+    return parseDate( nativeFile.getCreatedDate() );
   }
 
   private String getOwnerFromNativeFileDto( @NonNull RepositoryFileDto nativeFile ) {
-    RepositoryFileAcl acl = unifiedRepository.getAcl( nativeFile.getId() );
+    String owner = nativeFile.getOwner();
+    if ( owner != null ) {
+      return owner;
+    }
 
-    return acl.getOwner().getName();
+    // Owner may not be available in the DTO depending on the service and/or parameters used.
+    // So we need to fall back to the ACL to get the owner.
+    return getOwnerByFileId( nativeFile.getId() );
+  }
+
+  @VisibleForTesting
+  String getOwnerByFileId( String fileId ) {
+    RepositoryFileAcl acl = unifiedRepository.getAcl( fileId );
+    if ( acl != null ) {
+      return acl.getOwner().getName();
+    }
+
+    return null;
   }
 
   @NonNull
@@ -413,7 +428,10 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
       nativeFile.getLastModifiedDate() != null ? nativeFile.getLastModifiedDate() : nativeFile.getCreatedDate() );
 
     if ( nativeFile.getId() != null ) {
-      repositoryObject.setObjectId( nativeFile.getId().toString() );
+      String id = nativeFile.getId().toString();
+
+      repositoryObject.setObjectId( id );
+      repositoryObject.setOwner( getOwnerByFileId( id ) );
     }
 
     repositoryObject.setDescription( nativeFile.getDescription() );
@@ -460,28 +478,34 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
 
   @NonNull
   @Override
-  public List<IGenericFile> getDeletedFiles() throws OperationFailedException {
+  public List<IGenericFile> getDeletedFiles() {
     return fileService.doGetDeletedFiles().stream()
       .map( fileDto -> {
-        GenericFilePath parentPath = null;
+        RepositoryObject repositoryObject = convertFromNativeFileDto( fileDto, getParentPath( fileDto ) );
 
-        try {
-          parentPath = GenericFilePath.parseRequired( fileDto.getPath() ).getParent();
-        } catch ( InvalidPathException e ) {
-          // noop
-        }
-
-        RepositoryObject repositoryObject =
-          convertFromNativeFileDto( fileDto, parentPath != null ? parentPath.toString() : null );
-
-        repositoryObject.setOwner( getOwnerFromNativeFileDto( fileDto ) );
         repositoryObject.setOriginalLocation( getLocation( fileDto.getOriginalParentFolderPath() ) );
         repositoryObject.setDeletedBy( fileDto.getCreatorId() );
-        repositoryObject.setDeletedDate( getDate( fileDto.getDeletedDate() ) );
+        repositoryObject.setDeletedDate( parseDate( fileDto.getDeletedDate() ) );
 
         return repositoryObject;
       } )
       .collect( Collectors.toList() );
+  }
+
+  private String getParentPath( RepositoryFileDto fileDto ) {
+    try {
+      return getParentPath( GenericFilePath.parseRequired( fileDto.getPath() ) );
+    } catch ( InvalidPathException e ) {
+      // noop
+    }
+
+    return null;
+  }
+
+  private String getParentPath( GenericFilePath path ) {
+    GenericFilePath parentPath = path.getParent();
+
+    return parentPath != null ? parentPath.toString() : null;
   }
 
   private List<IGenericFile> getLocation( String path ) {
@@ -502,11 +526,10 @@ public class RepositoryFileProvider extends BaseGenericFileProvider<RepositoryFi
         folder = getFile( locationPath );
       } catch ( OperationFailedException e ) {
         // Location folder not found, most likely because it was deleted.
-        GenericFilePath parentPath = locationPath.getParent();
-        String name = locationPath.getSegments().get( locationPath.getSegments().size() - 1 );
+        String parentPath = getParentPath( locationPath );
+        String name = locationPath.getLastSegment();
 
-        folder = createRepositoryObject( name, locationPath.toString(), null, true,
-          parentPath != null ? parentPath.toString() : null );
+        folder = createRepositoryObject( name, locationPath.toString(), null, true, parentPath );
       }
 
       location.add( folder );
